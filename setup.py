@@ -44,9 +44,10 @@ Programming Language :: Python :: 3
 Programming Language :: Python :: 3.7
 Programming Language :: Python :: 3.8
 Programming Language :: Python :: 3.9
-Topic :: Software Development
+Topic :: Software Development :: Libraries
 Topic :: Scientific/Engineering
 Operating System :: Microsoft :: Windows
+Operating System :: POSIX :: Linux
 Operating System :: POSIX
 Operating System :: Unix
 Operating System :: MacOS
@@ -54,7 +55,7 @@ Operating System :: MacOS
 """
 
 MAJOR = 1
-MINOR = 7
+MINOR = 8
 MICRO = 0
 ISRELEASED = False
 IS_RELEASE_BRANCH = False
@@ -88,10 +89,11 @@ def git_version():
         # commit history. This gives the commit count since the previous branch
         # point from the current branch (assuming a full `git clone`, it may be
         # less if `--depth` was used - commonly the default in CI):
-        prev_version_tag = '^v{}.{}.0'.format(MAJOR, MINOR - 1)
+        prev_version_tag = '^v{}.{}.0'.format(MAJOR, MINOR - 2)
         out = _minimal_ext_cmd(['git', 'rev-list', 'HEAD', prev_version_tag,
                                 '--count'])
         COMMIT_COUNT = out.strip().decode('ascii')
+        COMMIT_COUNT = '0' if not COMMIT_COUNT else COMMIT_COUNT
     except OSError:
         GIT_REVISION = "Unknown"
         COMMIT_COUNT = "Unknown"
@@ -236,7 +238,15 @@ def get_build_ext_override():
         distutils_build_ext = distutils.command.build_ext.build_ext
         distutils.command.build_ext.build_ext = npy_build_ext
         try:
+            import pythran
             from pythran.dist import PythranBuildExt as BaseBuildExt
+            # Version check - a too old Pythran will give problems
+            if LooseVersion(pythran.__version__) < LooseVersion('0.9.11'):
+                raise RuntimeError("The installed `pythran` is too old, >= "
+                                   "0.9.11 is needed, {} detected. Please "
+                                   "upgrade Pythran, or use `export "
+                                   "SCIPY_USE_PYTHRAN=0`.".format(
+                                   pythran.__version__))
         except ImportError:
             BaseBuildExt = npy_build_ext
         finally:
@@ -486,13 +496,15 @@ def check_setuppy_command():
     run_build = parse_setuppy_commands()
     if run_build:
         try:
+            pkgname = 'numpy'
             import numpy
+            pkgname = 'pybind11'
             import pybind11
         except ImportError as exc:  # We do not have our build deps installed
             print(textwrap.dedent(
                     """Error: '%s' must be installed before running the build.
                     """
-                    % (exc.name,)))
+                    % (pkgname,)))
             sys.exit(1)
 
     return run_build
@@ -533,7 +545,7 @@ def configuration(parent_package='', top_path=None):
 
 def setup_package():
     # In maintenance branch, change np_maxversion to N+3 if numpy is at N
-    # Update here and in scipy/__init__.py
+    # Update here, in pyproject.toml, and in scipy/__init__.py
     # Rationale: SciPy builds without deprecation warnings with N; deprecations
     #            in N+1 will turn into errors in N+3
     # For Python versions, if releases is (e.g.) <=3.9.x, set bound to 3.10
@@ -570,7 +582,6 @@ def setup_package():
         cmdclass=cmdclass,
         classifiers=[_f for _f in CLASSIFIERS.split('\n') if _f],
         platforms=["Windows", "Linux", "Solaris", "Mac OS-X", "Unix"],
-        test_suite='nose.collector',
         install_requires=[req_np],
         python_requires=req_py,
     )
@@ -597,9 +608,10 @@ def setup_package():
         cmdclass['build_ext'] = get_build_ext_override()
         cmdclass['build_clib'] = get_build_clib_override()
 
-        cwd = os.path.abspath(os.path.dirname(__file__))
-        if not os.path.exists(os.path.join(cwd, 'PKG-INFO')):
-            # Generate Cython sources, unless building from source release
+        if not 'sdist' in sys.argv:
+            # Generate Cython sources, unless we're creating an sdist
+            # Cython is a build dependency, and shipping generated .c files
+            # can cause problems (see gh-14199)
             generate_cython()
 
         metadata['configuration'] = configuration
